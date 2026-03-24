@@ -305,16 +305,33 @@ function groupDocsByCollections(docs) {
   return { weeklyGroups, dailyGroups };
 }
 
+function serializeDocForRedis(doc) {
+  return JSON.parse(JSON.stringify(doc));
+}
+
+async function publishDocsToRedisStream(docs) {
+  if (!Array.isArray(docs) || !docs.length) {
+    return;
+  }
+
+  for (const doc of docs) {
+    const payload = serializeDocForRedis(doc);
+    await redis.xAdd("gps_stream", "*", {
+      data: JSON.stringify(payload),
+    });
+  }
+}
+
 async function insertDocsToMongo(docs) {
   if (!Array.isArray(docs) || !docs.length) {
-    return { insertedCount: 0, skippedCount: 0 };
+    return { insertedCount: 0, skippedCount: 0, publishedCount: 0 };
   }
 
   const filteredDocs = docs.filter((doc) => !isIgnoredMongoDoc(doc));
   const skippedCount = docs.length - filteredDocs.length;
 
   if (!filteredDocs.length) {
-    return { insertedCount: 0, skippedCount };
+    return { insertedCount: 0, skippedCount, publishedCount: 0 };
   }
 
   const { weeklyGroups, dailyGroups } = groupDocsByCollections(filteredDocs);
@@ -329,9 +346,11 @@ async function insertDocsToMongo(docs) {
       await mongoDb.collection(colName).insertMany(groupDocs, { ordered: true });
     }
 
-    return { insertedCount: filteredDocs.length, skippedCount };
+    await publishDocsToRedisStream(filteredDocs);
+
+    return { insertedCount: filteredDocs.length, skippedCount, publishedCount: filteredDocs.length };
   } catch (e) {
-    console.error(`❌ Mongo insert ERROR | count=${filteredDocs.length} | err=${e?.message || e}`);
+    console.error(`❌ Mongo/Redis pipeline ERROR | count=${filteredDocs.length} | err=${e?.message || e}`);
     throw e;
   }
 }
