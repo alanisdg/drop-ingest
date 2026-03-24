@@ -4,13 +4,13 @@ import Parser from "teltonika-parser-extended";
 import binutils from "binutils64";
 import { MongoClient } from "mongodb";
 import dotenv from "dotenv";
+import { createClient } from "redis";
 import path from "path";
 
 // IMEI para debug selectivo
 let DEBUG_IMEI = process.env.DEBUG_IMEI || null;
 const logForImei = (imeiValue, ...args) => {
   if (DEBUG_IMEI && String(imeiValue) === String(DEBUG_IMEI)) {
-    console.log(...args);
   }
 };
 
@@ -23,6 +23,13 @@ const ACK_ENABLED = process.env.ACK_ENABLED !== "false";
 
 // Guardar hex completo de paquetes solo cuando se habilita explícitamente.
 const STORE_RAW_PACKET_HEX = process.env.STORE_RAW_PACKET_HEX === "true";
+const DEBUG_FILTERS = process.env.DEBUG_FILTERS === "true";
+const IGNORED_RAW_EVENTS = new Set(
+  String(process.env.IGNORED_RAW_EVENTS || "497,498,499,11317")
+    .split(",")
+    .map((v) => Number(String(v).trim()))
+    .filter((v) => Number.isFinite(v))
+);
 
 // Nota: TCP mirroring / forwarding removido (ingestor mínimo)
 
@@ -32,8 +39,6 @@ function maybeWrite(socket, payload, label = "socket.write") {
   }
   try {
     socket.write(payload);
-    if (String(label).includes('ACK')) {
-    }
   } catch (e) {
     console.error(`❌ Failed ${label}:`, e);
   }
@@ -48,6 +53,30 @@ const mongoClient = new MongoClient(
 await mongoClient.connect();
 
 const mongoDb = mongoClient.db(process.env.DB_MONGO_DATABASE);
+
+const redis = createClient({
+  socket: {
+    host: process.env.REDIS_HOST || "10.124.0.6",
+    port: process.env.REDIS_PORT ? Number(process.env.REDIS_PORT) : 6379,
+  },
+});
+
+redis.on("error", (err) => {
+  console.error("❌ Redis error:", err?.message || err);
+});
+
+await redis.connect();
+
+async function getDeviceFromImei(imei) {
+  const data = await redis.get(`imei:${imei}`);
+
+  if (!data) {
+    console.error(`❌ IMEI not found in Redis: ${imei}`);
+    return null;
+  }
+
+  return JSON.parse(data);
+}
 
 const WEEKLY_COLLECTION_PREFIX = process.env.WEEKLY_COLLECTION_PREFIX || "drops_week_";
 const DAILY_COLLECTION_PREFIX = process.env.DAILY_COLLECTION_PREFIX || "drops_day_";
@@ -107,14 +136,14 @@ function isBinaryLikeString(str) {
 }
 
 function hasValidGPS(rec) {
+  const lat = rec?.lat ?? rec?.latitude ?? rec?.gps?.latitude;
+  const lng = rec?.lng ?? rec?.longitude ?? rec?.gps?.longitude;
+
   return Boolean(
-    rec &&
-      typeof rec.lat === "number" &&
-      typeof rec.lng === "number" &&
-      Number.isFinite(rec.lat) &&
-      Number.isFinite(rec.lng) &&
-      rec.lat !== 0 &&
-      rec.lng !== 0
+    Number.isFinite(lat) &&
+      Number.isFinite(lng) &&
+      lat !== 0 &&
+      lng !== 0
   );
 }
 
@@ -132,7 +161,73 @@ function normalizeIoValue(value) {
   return value;
 }
 
-function normalizeAvlRecord(imei, rec, rawPacketHex) {
+
+function toNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function ioMapFromRecord(rec) {
+  const ioElements = Array.isArray(rec?.ioElements) ? rec.ioElements : [];
+  const map = new Map();
+  for (const io of ioElements) {
+    map.set(Number(io?.id), normalizeIoValue(io?.value));
+  }
+  return map;
+}
+
+function getIo(map, id) {
+  return map.has(Number(id)) ? map.get(Number(id)) : null;
+}
+
+function toVoltageVolts(rawMv) {
+  const n = toNumber(rawMv);
+  return n === null ? null : Number((n / 1000).toFixed(3));
+}
+
+function toBatteryPercentFromMv(rawMv) {
+  const n = toNumber(rawMv);
+  if (n === null) return null;
+  return Number(((n / 43.77256539235412)).toFixed(2));
+}
+
+function eventNameFromId(eventId) {
+  if (Number(eventId) === 0) return 'Periodic / Sin evento';
+  return null;
+}
+
+function unifiedEventFromId(eventId) {
+  if (Number(eventId) === 0) {
+    return { unified_event_code: 31, unified_event_name: 'periodic' };
+  }
+  return { unified_event_code: null, unified_event_name: null };
+}
+
+function stoppedFromSpeed(speed) {
+  const n = Number(speed);
+  if (!Number.isFinite(n)) return null;
+  return n <= 0 ? 1 : 0;
+}
+function shouldIgnoreTcpRecord({ rawEventCode, gps }) {
+  if (IGNORED_RAW_EVENTS.has(Number(rawEventCode))) {
+    return { ignore: true, reason: 'ignored_raw_event' };
+  }
+
+  const lat = gps?.lat ?? gps?.latitude;
+  const lng = gps?.lng ?? gps?.longitude;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat === 0 || lng === 0) {
+    return { ignore: true, reason: 'invalid_gps' };
+  }
+
+  return { ignore: false };
+}
+
+function isIgnoredMongoDoc(doc) {
+  return IGNORED_RAW_EVENTS.has(Number(doc?.event_id ?? doc?.event_code));
+}
+
+
+async function normalizeAvlRecord(imei, rec, rawPacketHex) {
   const ioElements = Array.isArray(rec?.ioElements)
     ? rec.ioElements.map((io) => ({
         ...io,
@@ -140,25 +235,50 @@ function normalizeAvlRecord(imei, rec, rawPacketHex) {
       }))
     : [];
 
-  return {
+  const io = ioMapFromRecord({ ioElements });
+  const gps = rec?.gps || {};
+  const event_id = rec?.event_id ?? rec?.eventId ?? 0;
+  const speedNum = toNumber(rec?.speed ?? gps?.speed);
+  const heading = toNumber(rec?.angle ?? gps?.angle);
+  const odometer = toNumber(getIo(io, 16));
+  const extVoltage = toVoltageVolts(getIo(io, 66));
+  const batteryPercent = toBatteryPercentFromMv(getIo(io, 67));
+  const event_name = eventNameFromId(event_id);
+  const unified = unifiedEventFromId(event_id);
+
+  const device = await getDeviceFromImei(String(imei));
+  const normalized = {
     imei: String(imei),
-    received_at: new Date(),
+    device_id: device?.device_id ?? null,
+    customer_id: device?.customer_id ?? null,
+    lat: rec?.lat ?? rec?.latitude ?? gps?.latitude ?? null,
+    lng: rec?.lng ?? rec?.longitude ?? gps?.longitude ?? null,
+    speed: speedNum === null ? null : speedNum.toFixed(1),
+    heading,
+    satelites: toNumber(rec?.satelites ?? rec?.satellites ?? gps?.satellites),
+    rssi: -103,
+    odometer,
+    powerSupply: extVoltage,
+    powerBat: batteryPercent,
+    event_code: Number(event_id) || 0,
+    event_name,
+    event_id: Number(event_id) || 0,
+    event_value: null,
+    event_value_text: null,
+    unified_event_code: unified.unified_event_code,
+    unified_event_name: unified.unified_event_name,
+    stoped: stoppedFromSpeed(speedNum),
     update_time: rec?.timestamp ? new Date(rec.timestamp) : null,
-    lat: rec?.lat ?? null,
-    lng: rec?.lng ?? null,
-    altitude: rec?.altitude ?? null,
-    angle: rec?.angle ?? null,
-    satellites: rec?.satellites ?? null,
-    speed: rec?.speed ?? null,
-    priority: rec?.priority ?? null,
-    event_id: rec?.event_id ?? rec?.eventId ?? null,
-    ioElements,
-    raw_packet_hex: rawPacketHex,
+    odometroTotal: odometer,
+    odometroReporte: 0,
+    distance_m_between_msgs: 0,
   };
+  console.log('📝 drop to insert:', JSON.stringify(normalized));
+  return normalized;
 }
 
 async function handleIncomingPacket(data, socket, state) {
-    console.log('viene algo')
+    const rawHex = data.toString("hex");
     let imei = state.imei;
 
     logForImei(imei, "📦 TCP bytes:", data.length);
@@ -192,12 +312,38 @@ async function handleIncomingPacket(data, socket, state) {
         return;
         }
 
+        let accepted = 0;
+        let discarded = 0;
         for (const rec of avl.records) {
-        if (!hasValidGPS(rec)) {
+        const rawEventCode = rec?.event_id ?? rec?.eventId ?? null;
+        const gps = {
+          lat: rec?.lat ?? rec?.latitude ?? rec?.gps?.latitude,
+          lng: rec?.lng ?? rec?.longitude ?? rec?.gps?.longitude,
+        };
+        const decision = shouldIgnoreTcpRecord({ rawEventCode, gps });
+        if (decision.ignore) {
+            discarded += 1;
+            if (DEBUG_FILTERS) {
+              console.log('skip record', JSON.stringify({ imei, rawEventCode, reason: decision.reason }));
+            }
             continue;
         }
-        const doc = normalizeAvlRecord(imei, rec, rawPacketHex);
+        if (!hasValidGPS(rec)) {
+            discarded += 1;
+            if (DEBUG_FILTERS) {
+              console.log('skip record', JSON.stringify({ imei, rawEventCode, reason: 'invalid_gps_legacy' }));
+            }
+            continue;
+        }
+        const doc = await normalizeAvlRecord(imei, rec, rawPacketHex);
         insertBuffer.push(doc);
+        accepted += 1;
+        }
+
+
+        if (insertBuffer.length) {
+        await insertDropsBatch();
+        } else {
         }
 
         const w = new binutils.BinaryWriter();
@@ -234,7 +380,7 @@ server.listen(PORT, "0.0.0.0", () =>
 async function insertDropsBatch() {
   if (!insertBuffer.length) return;
 
-  const docs = insertBuffer.splice(0, BATCH_SIZE);
+  const docs = insertBuffer.splice(0, BATCH_SIZE).filter((doc) => !isIgnoredMongoDoc(doc));
   const weeklyGroups = new Map();
   const dailyGroups = new Map();
 
@@ -255,12 +401,13 @@ async function insertDropsBatch() {
 
   try {
     for (const [colName, groupDocs] of weeklyGroups.entries()) {
+      console.log(`🗓️ collection -> ${colName} count=${groupDocs.length}`);
       await mongoDb.collection(colName).insertMany(groupDocs);
     }
     for (const [colName, groupDocs] of dailyGroups.entries()) {
+      console.log(`📆 collection -> ${colName} count=${groupDocs.length}`);
       await mongoDb.collection(colName).insertMany(groupDocs);
     }
-    console.log(`💾 Mongo dynamic insert OK | count=${docs.length} | weeklyCols=${weeklyGroups.size} | dailyCols=${dailyGroups.size}`);
   } catch (e) {
     console.error(`❌ Mongo dynamic insert ERROR | count=${docs.length} | err=${e?.message || e}`);
     throw e;
