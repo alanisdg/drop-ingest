@@ -86,8 +86,9 @@ const DAILY_COLLECTION_PREFIX = process.env.DAILY_COLLECTION_PREFIX || "drops_da
 /* ------------------------------------ */
 
 const PORT = process.env.TCP_PORT ? Number(process.env.TCP_PORT) : 5003;
-const insertBuffer = [];
 const BATCH_SIZE = process.env.MONGO_BATCH_SIZE ? Number(process.env.MONGO_BATCH_SIZE) : 200;
+const insertBuffer = [];
+let flushInProgress = false;
 
 function pad2(n) {
   return String(n).padStart(2, "0");
@@ -273,114 +274,16 @@ async function normalizeAvlRecord(imei, rec, rawPacketHex) {
     odometroReporte: 0,
     distance_m_between_msgs: 0,
   };
+
+  if (STORE_RAW_PACKET_HEX && rawPacketHex) {
+    normalized.raw_packet_hex = rawPacketHex;
+  }
+
   console.log('📝 drop to insert:', JSON.stringify(normalized));
   return normalized;
 }
 
-async function handleIncomingPacket(data, socket, state) {
-    const rawHex = data.toString("hex");
-    let imei = state.imei;
-
-    logForImei(imei, "📦 TCP bytes:", data.length);
-
-    try {
-        const parser = new Parser(data);
-
-        if (parser.isImei) {
-        state.imei = parser.imei;
-        imei = state.imei;
-
-        if (!state.imei || !/^\d{15}$/.test(String(state.imei))) {
-            console.error("❌ IMEI inválido (no es 15 dígitos), cerrando socket");
-            socket?.destroy();
-            return;
-        }
-
-        logForImei(state.imei, "✔ IMEI:", state.imei);
-        maybeWrite(socket, Buffer.from([0x01]), "IMEI ACK");
-        return;
-        }
-
-        const avl = parser.getAvl();
-        if (!avl || !avl.records || !Array.isArray(avl.records)) {
-        return;
-        }
-
-        const rawPacketHex = STORE_RAW_PACKET_HEX ? data.toString("hex") : null;
-
-        if (!imei) {
-        return;
-        }
-
-        let accepted = 0;
-        let discarded = 0;
-        for (const rec of avl.records) {
-        const rawEventCode = rec?.event_id ?? rec?.eventId ?? null;
-        const gps = {
-          lat: rec?.lat ?? rec?.latitude ?? rec?.gps?.latitude,
-          lng: rec?.lng ?? rec?.longitude ?? rec?.gps?.longitude,
-        };
-        const decision = shouldIgnoreTcpRecord({ rawEventCode, gps });
-        if (decision.ignore) {
-            discarded += 1;
-            if (DEBUG_FILTERS) {
-              console.log('skip record', JSON.stringify({ imei, rawEventCode, reason: decision.reason }));
-            }
-            continue;
-        }
-        if (!hasValidGPS(rec)) {
-            discarded += 1;
-            if (DEBUG_FILTERS) {
-              console.log('skip record', JSON.stringify({ imei, rawEventCode, reason: 'invalid_gps_legacy' }));
-            }
-            continue;
-        }
-        const doc = await normalizeAvlRecord(imei, rec, rawPacketHex);
-        insertBuffer.push(doc);
-        accepted += 1;
-        }
-
-
-        if (insertBuffer.length) {
-        await insertDropsBatch();
-        } else {
-        }
-
-        const w = new binutils.BinaryWriter();
-        w.WriteInt32(avl.number_of_data);
-        maybeWrite(socket, Buffer.from(w.ByteBuffer), "AVL ACK");
-    } catch (err) {
-        console.error("❌ TCP ERROR:", err);
-    }
-}
-
-const server = net.createServer((socket) => {
-    const state = { imei: null, deviceName: null };
-
-    socket.on("data", async (data) => {
-        await handleIncomingPacket(data, socket, state);
-    });
-
-    const cleanup = () => {
-        return;
-    };
-
-    socket.on('close', cleanup);
-    socket.on('end', cleanup);
-    socket.on('error', cleanup);
-});
-
-server.listen(PORT, "0.0.0.0", () =>
-  console.log(`🚀 Teltonika TCP listening on ${PORT}`)
-);
-
-/* ------------------------------------ */
-/* BATCH INSERT                         */
-/* ------------------------------------ */
-async function insertDropsBatch() {
-  if (!insertBuffer.length) return;
-
-  const docs = insertBuffer.splice(0, BATCH_SIZE).filter((doc) => !isIgnoredMongoDoc(doc));
+function groupDocsByCollections(docs) {
   const weeklyGroups = new Map();
   const dailyGroups = new Map();
 
@@ -399,26 +302,166 @@ async function insertDropsBatch() {
     dailyGroups.get(dailyName).push(doc);
   }
 
+  return { weeklyGroups, dailyGroups };
+}
+
+async function insertDocsToMongo(docs) {
+  if (!Array.isArray(docs) || !docs.length) {
+    return { insertedCount: 0, skippedCount: 0 };
+  }
+
+  const filteredDocs = docs.filter((doc) => !isIgnoredMongoDoc(doc));
+  const skippedCount = docs.length - filteredDocs.length;
+
+  if (!filteredDocs.length) {
+    return { insertedCount: 0, skippedCount };
+  }
+
+  const { weeklyGroups, dailyGroups } = groupDocsByCollections(filteredDocs);
+
   try {
     for (const [colName, groupDocs] of weeklyGroups.entries()) {
       console.log(`🗓️ collection -> ${colName} count=${groupDocs.length}`);
-      await mongoDb.collection(colName).insertMany(groupDocs);
+      await mongoDb.collection(colName).insertMany(groupDocs, { ordered: true });
     }
     for (const [colName, groupDocs] of dailyGroups.entries()) {
       console.log(`📆 collection -> ${colName} count=${groupDocs.length}`);
-      await mongoDb.collection(colName).insertMany(groupDocs);
+      await mongoDb.collection(colName).insertMany(groupDocs, { ordered: true });
     }
+
+    return { insertedCount: filteredDocs.length, skippedCount };
   } catch (e) {
-    console.error(`❌ Mongo dynamic insert ERROR | count=${docs.length} | err=${e?.message || e}`);
+    console.error(`❌ Mongo insert ERROR | count=${filteredDocs.length} | err=${e?.message || e}`);
     throw e;
   }
 }
 
+async function flushInsertBuffer() {
+  if (flushInProgress || !insertBuffer.length) {
+    return;
+  }
+
+  flushInProgress = true;
+  try {
+    while (insertBuffer.length) {
+      const docs = insertBuffer.splice(0, BATCH_SIZE);
+      await insertDocsToMongo(docs);
+    }
+  } finally {
+    flushInProgress = false;
+  }
+}
+
+async function handleIncomingPacket(data, socket, state) {
+  let imei = state.imei;
+
+  logForImei(imei, "📦 TCP bytes:", data.length);
+
+  try {
+    const parser = new Parser(data);
+
+    if (parser.isImei) {
+      state.imei = parser.imei;
+      imei = state.imei;
+
+      if (!state.imei || !/^\d{15}$/.test(String(state.imei))) {
+        console.error("❌ IMEI inválido (no es 15 dígitos), cerrando socket");
+        socket?.destroy();
+        return;
+      }
+
+      logForImei(state.imei, "✔ IMEI:", state.imei);
+      maybeWrite(socket, Buffer.from([0x01]), "IMEI ACK");
+      return;
+    }
+
+    const avl = parser.getAvl();
+    if (!avl || !avl.records || !Array.isArray(avl.records)) {
+      return;
+    }
+
+    if (!imei) {
+      console.error("❌ AVL packet recibido sin IMEI de sesión; no se enviará ACK");
+      return;
+    }
+
+    const rawPacketHex = STORE_RAW_PACKET_HEX ? data.toString("hex") : null;
+    const docsToInsert = [];
+    let discarded = 0;
+
+    for (const rec of avl.records) {
+      const rawEventCode = rec?.event_id ?? rec?.eventId ?? null;
+      const gps = {
+        lat: rec?.lat ?? rec?.latitude ?? rec?.gps?.latitude,
+        lng: rec?.lng ?? rec?.longitude ?? rec?.gps?.longitude,
+      };
+      const decision = shouldIgnoreTcpRecord({ rawEventCode, gps });
+      if (decision.ignore) {
+        discarded += 1;
+        if (DEBUG_FILTERS) {
+          console.log('skip record', JSON.stringify({ imei, rawEventCode, reason: decision.reason }));
+        }
+        continue;
+      }
+      if (!hasValidGPS(rec)) {
+        discarded += 1;
+        if (DEBUG_FILTERS) {
+          console.log('skip record', JSON.stringify({ imei, rawEventCode, reason: 'invalid_gps_legacy' }));
+        }
+        continue;
+      }
+
+      const doc = await normalizeAvlRecord(imei, rec, rawPacketHex);
+      docsToInsert.push(doc);
+    }
+
+    // Política de seguridad: solo ACK cuando los registros aceptados del paquete
+    // ya quedaron persistidos en Mongo.
+    if (docsToInsert.length > 0) {
+      await insertDocsToMongo(docsToInsert);
+    }
+
+    if (docsToInsert.length === 0 && discarded < avl.number_of_data) {
+      console.error(`❌ No se generaron documentos para ACK | imei=${imei} total=${avl.number_of_data} discarded=${discarded}`);
+      return;
+    }
+
+    const w = new binutils.BinaryWriter();
+    w.WriteInt32(avl.number_of_data);
+    maybeWrite(socket, Buffer.from(w.ByteBuffer), "AVL ACK");
+  } catch (err) {
+    console.error("❌ TCP ERROR:", err);
+  }
+}
+
+const server = net.createServer((socket) => {
+  const state = { imei: null, deviceName: null };
+
+  socket.on("data", async (data) => {
+    await handleIncomingPacket(data, socket, state);
+  });
+
+  const cleanup = () => {
+    return;
+  };
+
+  socket.on('close', cleanup);
+  socket.on('end', cleanup);
+  socket.on('error', cleanup);
+});
+
+server.listen(PORT, "0.0.0.0", () =>
+  console.log(`🚀 Teltonika TCP listening on ${PORT}`)
+);
+
+/* ------------------------------------ */
+/* BATCH INSERT                         */
+/* ------------------------------------ */
 setInterval(async () => {
   try {
-    await insertDropsBatch();
+    await flushInsertBuffer();
   } catch (e) {
-    console.error(`❌ insertDropsBatch failed: ${e?.message || e}`);
+    console.error(`❌ flushInsertBuffer failed: ${e?.message || e}`);
   }
 }, 1000);
 
