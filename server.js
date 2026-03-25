@@ -1,10 +1,10 @@
 // Teltonika TCP Server (Codec8/8E)
 import net from "node:net";
-import Parser from "teltonika-parser-extended";
-import binutils from "binutils64";
-import { MongoClient } from "mongodb";
-import dotenv from "dotenv";
-import { createClient } from "redis";
+import Parser from "/opt/ingest-shared/node_modules/teltonika-parser-extended/index.js";
+import binutils from "/opt/ingest-shared/node_modules/binutils64/binutils.js";
+import { MongoClient } from "/opt/ingest-shared/node_modules/mongodb/lib/index.js";
+import dotenv from "/opt/ingest-shared/node_modules/dotenv/lib/main.js";
+import { createClient } from "/opt/ingest-shared/node_modules/redis/dist/index.js";
 import path from "path";
 
 // IMEI para debug selectivo
