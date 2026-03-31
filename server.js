@@ -307,6 +307,14 @@ ${JSON.stringify(ioMapToPrettyObject(io), null, 2)}`);
     console.log(`👁️ EYE candidate IO | imei=${imei} device_id=${device?.device_id ?? "null"} event_id=${event_id}
 ${JSON.stringify(eyeCandidates, null, 2)}`);
   }
+
+  if (io.has(331)) {
+    console.log(`🧪 BLE raw ioElements (id 331 present) | imei=${imei} device_id=${device?.device_id ?? "null"} event_id=${event_id}
+${JSON.stringify(ioElements, null, 2)}`);
+    console.log(`🧪 BLE raw record (id 331 present) | imei=${imei} device_id=${device?.device_id ?? "null"} event_id=${event_id}
+${JSON.stringify(rec, null, 2)}`);
+  }
+
   const normalized = {
     imei: String(imei),
     device_id: device?.device_id ?? null,
