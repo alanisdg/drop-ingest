@@ -78,6 +78,43 @@ async function getDeviceFromImei(imei) {
   return JSON.parse(data);
 }
 
+function getLastOdometerKey(imei) {
+  return `teltonika:last_odometer:${imei}`;
+}
+
+async function computeAndStoreOdometerDelta(imei, odometer, updateTime) {
+  const current = toNumber(odometer);
+  if (current === null) {
+    return 0;
+  }
+
+  const key = getLastOdometerKey(String(imei));
+  const previousRaw = await redis.get(key);
+  let delta = 0;
+
+  if (previousRaw) {
+    try {
+      const previous = JSON.parse(previousRaw);
+      const previousOdometer = toNumber(previous?.odometer);
+      if (previousOdometer !== null) {
+        const computed = current - previousOdometer;
+        delta = computed > 0 ? computed : 0;
+      }
+    } catch (e) {
+      console.error(`❌ Invalid previous odometer cache for ${imei}:`, e?.message || e);
+    }
+  }
+
+  await redis.set(key, JSON.stringify({
+    odometer: current,
+    update_time: updateTime instanceof Date && !Number.isNaN(updateTime.getTime())
+      ? updateTime.toISOString()
+      : updateTime ?? null,
+  }));
+
+  return delta;
+}
+
 const WEEKLY_COLLECTION_PREFIX = process.env.WEEKLY_COLLECTION_PREFIX || "drops_week_";
 const DAILY_COLLECTION_PREFIX = process.env.DAILY_COLLECTION_PREFIX || "drops_day_";
 
@@ -181,6 +218,14 @@ function getIo(map, id) {
   return map.has(Number(id)) ? map.get(Number(id)) : null;
 }
 
+function ioMapToPrettyObject(map) {
+  return Object.fromEntries(
+    [...map.entries()]
+      .sort((a, b) => Number(a[0]) - Number(b[0]))
+      .map(([id, value]) => [String(id), value])
+  );
+}
+
 function toVoltageVolts(rawMv) {
   const n = toNumber(rawMv);
   return n === null ? null : Number((n / 1000).toFixed(3));
@@ -242,12 +287,26 @@ async function normalizeAvlRecord(imei, rec, rawPacketHex) {
   const speedNum = toNumber(rec?.speed ?? gps?.speed);
   const heading = toNumber(rec?.angle ?? gps?.angle);
   const odometer = toNumber(getIo(io, 16));
+  const mobileOperatorCode = getIo(io, 241);
   const extVoltage = toVoltageVolts(getIo(io, 66));
   const batteryPercent = toBatteryPercentFromMv(getIo(io, 67));
   const event_name = eventNameFromId(event_id);
   const unified = unifiedEventFromId(event_id);
+  const updateTime = rec?.timestamp ? new Date(rec.timestamp) : null;
+  const odometroReporte = await computeAndStoreOdometerDelta(imei, odometer, updateTime);
 
   const device = await getDeviceFromImei(String(imei));
+  const eyeCandidates = [...io.entries()]
+    .filter(([id]) => Number(id) >= 300)
+    .map(([id, value]) => ({ id: Number(id), value }));
+
+  console.log(`📶 Teltonika mobile operator | imei=${imei} device_id=${device?.device_id ?? "null"} operator=${mobileOperatorCode ?? "null"}`);
+  console.log(`🧾 Teltonika IO pretty | imei=${imei} device_id=${device?.device_id ?? "null"}
+${JSON.stringify(ioMapToPrettyObject(io), null, 2)}`);
+  if (eyeCandidates.length) {
+    console.log(`👁️ EYE candidate IO | imei=${imei} device_id=${device?.device_id ?? "null"} event_id=${event_id}
+${JSON.stringify(eyeCandidates, null, 2)}`);
+  }
   const normalized = {
     imei: String(imei),
     device_id: device?.device_id ?? null,
@@ -257,6 +316,7 @@ async function normalizeAvlRecord(imei, rec, rawPacketHex) {
     speed: speedNum === null ? null : speedNum.toFixed(1),
     heading,
     satelites: toNumber(rec?.satelites ?? rec?.satellites ?? gps?.satellites),
+    operator: mobileOperatorCode ?? null,
     rssi: -103,
     odometer,
     powerSupply: extVoltage,
@@ -269,9 +329,9 @@ async function normalizeAvlRecord(imei, rec, rawPacketHex) {
     unified_event_code: unified.unified_event_code,
     unified_event_name: unified.unified_event_name,
     stoped: stoppedFromSpeed(speedNum),
-    update_time: rec?.timestamp ? new Date(rec.timestamp) : null,
+    update_time: updateTime,
     odometroTotal: odometer,
-    odometroReporte: 0,
+    odometroReporte,
     distance_m_between_msgs: 0,
   };
 
@@ -316,9 +376,20 @@ async function publishDocsToRedisStream(docs) {
 
   for (const doc of docs) {
     const payload = serializeDocForRedis(doc);
-    await redis.xAdd("gps_stream", "*", {
-      data: JSON.stringify(payload),
-    });
+    await redis.xAdd(
+      "gps_stream",
+      "*",
+      {
+        data: JSON.stringify(payload),
+      },
+      {
+        TRIM: {
+          strategy: "MAXLEN",
+          strategyModifier: "~",
+          threshold: 1000,
+        },
+      }
+    );
   }
 }
 
@@ -396,6 +467,8 @@ async function handleIncomingPacket(data, socket, state) {
 
     const avl = parser.getAvl();
     if (!avl || !avl.records || !Array.isArray(avl.records)) {
+      console.log("📨 Teltonika non-AVL / possible GPRS response | imei=", imei ?? null, "hex=", data.toString("hex"));
+      console.log("📨 Teltonika non-AVL / parser object:", JSON.stringify(avl ?? null, null, 2));
       return;
     }
 
