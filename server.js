@@ -489,6 +489,25 @@ async function handleIncomingPacket(data, socket, state) {
       };
       const decision = shouldIgnoreTcpRecord({ rawEventCode, gps });
       if (decision.ignore) {
+        const ignoredIoElements = Array.isArray(rec?.ioElements)
+          ? rec.ioElements.map((io) => ({
+              ...io,
+              value: normalizeIoValue(io?.value),
+            }))
+          : [];
+        const ignoredIoMap = ioMapFromRecord({ ioElements: ignoredIoElements });
+        const ignoredDevice = await getDeviceFromImei(String(imei));
+
+        console.log(`🚫 Ignored Teltonika record | imei=${imei} device_id=${ignoredDevice?.device_id ?? "null"} rawEventCode=${rawEventCode ?? "null"} reason=${decision.reason}`);
+        console.log(`🚫 Ignored Teltonika IO pretty | imei=${imei} device_id=${ignoredDevice?.device_id ?? "null"}
+${JSON.stringify(ioMapToPrettyObject(ignoredIoMap), null, 2)}`);
+
+        const ignoredEyeListRaw = getIo(ignoredIoMap, 11317);
+        if (ignoredEyeListRaw != null) {
+          console.log(`👁️ Ignored EYE RAW 11317 | imei=${imei} device_id=${ignoredDevice?.device_id ?? "null"} rawEventCode=${rawEventCode ?? "null"}`);
+          console.log(JSON.stringify(ignoredEyeListRaw, null, 2));
+        }
+
         discarded += 1;
         if (DEBUG_FILTERS) {
           console.log('skip record', JSON.stringify({ imei, rawEventCode, reason: decision.reason }));
