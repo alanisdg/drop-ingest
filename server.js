@@ -23,6 +23,12 @@ const ACK_ENABLED = process.env.ACK_ENABLED !== "false";
 
 // Guardar hex completo de paquetes solo cuando se habilita explícitamente.
 const STORE_RAW_PACKET_HEX = process.env.STORE_RAW_PACKET_HEX === "true";
+const RAW_PACKET_HEX_DEVICE_IDS = new Set(
+  String(process.env.RAW_PACKET_HEX_DEVICE_IDS || "4251")
+    .split(",")
+    .map((v) => Number(String(v).trim()))
+    .filter((v) => Number.isFinite(v))
+);
 const DEBUG_FILTERS = process.env.DEBUG_FILTERS === "true";
 const IGNORED_RAW_EVENTS = new Set(
   String(process.env.IGNORED_RAW_EVENTS || "497,498,499,11317")
@@ -341,9 +347,14 @@ ${JSON.stringify(rec, null, 2)}`);
     odometroTotal: odometer,
     odometroReporte,
     distance_m_between_msgs: 0,
+    ioelements: ioElements,
   };
 
-  if (STORE_RAW_PACKET_HEX && rawPacketHex) {
+  if (
+    STORE_RAW_PACKET_HEX &&
+    rawPacketHex &&
+    RAW_PACKET_HEX_DEVICE_IDS.has(Number(device?.device_id))
+  ) {
     normalized.raw_packet_hex = rawPacketHex;
   }
 
@@ -377,13 +388,23 @@ function serializeDocForRedis(doc) {
   return JSON.parse(JSON.stringify(doc));
 }
 
+function buildRedisPayload(doc) {
+  const payload = serializeDocForRedis(doc);
+
+  if (Number(doc?.device_id) === 1493) {
+    payload.ioelements = Array.isArray(doc?.ioelements) ? doc.ioelements : [];
+  }
+
+  return payload;
+}
+
 async function publishDocsToRedisStream(docs) {
   if (!Array.isArray(docs) || !docs.length) {
     return;
   }
 
   for (const doc of docs) {
-    const payload = serializeDocForRedis(doc);
+    const payload = buildRedisPayload(doc);
     await redis.xAdd(
       "gps_stream",
       "*",
