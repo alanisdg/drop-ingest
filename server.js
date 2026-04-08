@@ -392,7 +392,11 @@ function buildRedisPayload(doc) {
   const payload = serializeDocForRedis(doc);
 
   if (Number(doc?.device_id) === 1493) {
-    payload.ioelements = Array.isArray(doc?.ioelements) ? doc.ioelements : [];
+    const ioelements = Array.isArray(doc?.ioelements) ? doc.ioelements : [];
+    payload.ioelements = ioelements;
+
+    const io11317 = ioelements.find((io) => Number(io?.id) === 11317);
+    payload.ioelements_11317 = io11317 ?? null;
   }
 
   return payload;
