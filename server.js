@@ -300,8 +300,16 @@ async function normalizeAvlRecord(imei, rec, rawPacketHex) {
   const batteryPercent = toBatteryPercentFromMv(getIo(io, 67));
   const tmp1Raw = getIo(io, 10800);
   const tmp2Raw = getIo(io, 10801);
+  const humidity1Raw = getIo(io, 10804);
+  const humidity2Raw = getIo(io, 10805);
+  const magnet1Raw = getIo(io, 10808);
+  const magnet2Raw = getIo(io, 10809);
   const tmp1 = toNumber(tmp1Raw);
   const tmp2 = toNumber(tmp2Raw);
+  const humidity1 = toNumber(humidity1Raw);
+  const humidity2 = toNumber(humidity2Raw);
+  const magnet1 = toNumber(magnet1Raw);
+  const magnet2 = toNumber(magnet2Raw);
   const event_name = eventNameFromId(event_id);
   const unified = unifiedEventFromId(event_id);
   const updateTime = rec?.timestamp ? new Date(rec.timestamp) : null;
@@ -356,6 +364,10 @@ ${JSON.stringify(debugIoElements, null, 2)}`);
     distance_m_between_msgs: 0,
     tmp1: tmp1 === null ? null : (tmp1 / 100),
     tmp2: tmp2 === null ? null : (tmp2 / 100),
+    humidity1,
+    humidity2,
+    magnet1,
+    magnet2,
     ioelements: ioElements,
   };
 
