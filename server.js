@@ -314,6 +314,14 @@ ${JSON.stringify(ioMapToPrettyObject(io), null, 2)}`);
 ${JSON.stringify(eyeCandidates, null, 2)}`);
   }
 
+  const isDebugDevice = RAW_PACKET_HEX_DEVICE_IDS.has(Number(device?.device_id));
+  if (isDebugDevice) {
+    console.log(`🧪 Debug device raw ioElements | imei=${imei} device_id=${device?.device_id ?? "null"} event_id=${event_id}
+${JSON.stringify(Array.isArray(rec?.ioElements) ? rec.ioElements : [], null, 2)}`);
+    console.log(`🧪 Debug device raw record | imei=${imei} device_id=${device?.device_id ?? "null"} event_id=${event_id}
+${JSON.stringify(rec, null, 2)}`);
+  }
+
   if (io.has(331)) {
     console.log(`🧪 BLE raw ioElements (id 331 present) | imei=${imei} device_id=${device?.device_id ?? "null"} event_id=${event_id}
 ${JSON.stringify(ioElements, null, 2)}`);
