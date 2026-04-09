@@ -404,23 +404,6 @@ function buildRedisPayload(doc) {
   return payload;
 }
 
-async function publishToRedisStream(streamName, payload) {
-  await redis.xAdd(
-    streamName,
-    "*",
-    {
-      data: JSON.stringify(payload),
-    },
-    {
-      TRIM: {
-        strategy: "MAXLEN",
-        strategyModifier: "~",
-        threshold: 1000,
-      },
-    }
-  );
-}
-
 async function publishDocsToRedisStream(docs) {
   if (!Array.isArray(docs) || !docs.length) {
     return;
@@ -428,12 +411,20 @@ async function publishDocsToRedisStream(docs) {
 
   for (const doc of docs) {
     const payload = buildRedisPayload(doc);
-    await publishToRedisStream("gps_stream", payload);
-    await publishToRedisStream("drop", payload);
-
-    if (String(doc?.imei) === String(DEBUG_IMEI)) {
-      await publishToRedisStream("debug_drop", payload);
-    }
+    await redis.xAdd(
+      "gps_stream",
+      "*",
+      {
+        data: JSON.stringify(payload),
+      },
+      {
+        TRIM: {
+          strategy: "MAXLEN",
+          strategyModifier: "~",
+          threshold: 1000,
+        },
+      }
+    );
   }
 }
 
