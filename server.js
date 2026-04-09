@@ -10,6 +10,11 @@ import path from "path";
 // IMEI para debug selectivo
 const DEBUG_IMEI = process.env.DEBUG_IMEI || "863719063825898";
 const DEBUG_IO_IDS = new Set([10800, 10801, 10802, 10803, 11317]);
+const logForImei = (imeiValue, ...args) => {
+  if (String(imeiValue) === String(DEBUG_IMEI)) {
+    console.log(...args);
+  }
+};
 
 const __dirname = path.dirname(new URL(import.meta.url).pathname);
 dotenv.config({ path: path.resolve(__dirname, "../.env") });
