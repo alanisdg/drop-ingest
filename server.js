@@ -304,17 +304,6 @@ async function normalizeAvlRecord(imei, rec, rawPacketHex) {
   const odometroReporte = await computeAndStoreOdometerDelta(imei, odometer, updateTime);
 
   const device = await getDeviceFromImei(String(imei));
-  const eyeCandidates = [...io.entries()]
-    .filter(([id]) => Number(id) >= 300)
-    .map(([id, value]) => ({ id: Number(id), value }));
-
-  console.log(`📶 Teltonika mobile operator | imei=${imei} device_id=${device?.device_id ?? "null"} operator=${mobileOperatorCode ?? "null"}`);
-  console.log(`🧾 Teltonika IO pretty | imei=${imei} device_id=${device?.device_id ?? "null"}
-${JSON.stringify(ioMapToPrettyObject(io), null, 2)}`);
-  if (eyeCandidates.length) {
-    console.log(`👁️ EYE candidate IO | imei=${imei} device_id=${device?.device_id ?? "null"} event_id=${event_id}
-${JSON.stringify(eyeCandidates, null, 2)}`);
-  }
 
   if (String(imei) === String(DEBUG_IMEI)) {
     const debugIoElements = (Array.isArray(rec?.ioElements) ? rec.ioElements : [])
@@ -363,7 +352,6 @@ ${JSON.stringify(debugIoElements, null, 2)}`);
     normalized.raw_packet_hex = rawPacketHex;
   }
 
-  console.log('📝 drop to insert:', JSON.stringify(normalized));
   return normalized;
 }
 
@@ -446,13 +434,11 @@ async function insertDocsToMongo(docs) {
   const { weeklyGroups, dailyGroups } = groupDocsByCollections(filteredDocs);
 
   try {
-    for (const [colName, groupDocs] of weeklyGroups.entries()) {
-      console.log(`🗓️ collection -> ${colName} count=${groupDocs.length}`);
-      await mongoDb.collection(colName).insertMany(groupDocs, { ordered: true });
+    for (const [, groupDocs] of weeklyGroups.entries()) {
+      await mongoDb.collection(getWeeklyCollectionName(groupDocs[0]?.update_time instanceof Date ? groupDocs[0].update_time : new Date())).insertMany(groupDocs, { ordered: true });
     }
-    for (const [colName, groupDocs] of dailyGroups.entries()) {
-      console.log(`📆 collection -> ${colName} count=${groupDocs.length}`);
-      await mongoDb.collection(colName).insertMany(groupDocs, { ordered: true });
+    for (const [, groupDocs] of dailyGroups.entries()) {
+      await mongoDb.collection(getDailyCollectionName(groupDocs[0]?.update_time instanceof Date ? groupDocs[0].update_time : new Date())).insertMany(groupDocs, { ordered: true });
     }
 
     await publishDocsToRedisStream(filteredDocs);
@@ -536,14 +522,8 @@ async function handleIncomingPacket(data, socket, state) {
         const ignoredIoMap = ioMapFromRecord({ ioElements: ignoredIoElements });
         const ignoredDevice = await getDeviceFromImei(String(imei));
 
-        console.log(`🚫 Ignored Teltonika record | imei=${imei} device_id=${ignoredDevice?.device_id ?? "null"} rawEventCode=${rawEventCode ?? "null"} reason=${decision.reason}`);
-        console.log(`🚫 Ignored Teltonika IO pretty | imei=${imei} device_id=${ignoredDevice?.device_id ?? "null"}
-${JSON.stringify(ioMapToPrettyObject(ignoredIoMap), null, 2)}`);
-
-        const ignoredEyeListRaw = getIo(ignoredIoMap, 11317);
-        if (ignoredEyeListRaw != null) {
-          console.log(`👁️ Ignored EYE RAW 11317 | imei=${imei} device_id=${ignoredDevice?.device_id ?? "null"} rawEventCode=${rawEventCode ?? "null"}`);
-          console.log(JSON.stringify(ignoredEyeListRaw, null, 2));
+        if (String(imei) === String(DEBUG_IMEI)) {
+          console.log(`🚫 Ignored Teltonika record | imei=${imei} device_id=${ignoredDevice?.device_id ?? "null"} rawEventCode=${rawEventCode ?? "null"} reason=${decision.reason}`);
         }
 
         discarded += 1;
