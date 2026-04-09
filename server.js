@@ -8,11 +8,8 @@ import { createClient } from "/opt/ingest-shared/node_modules/redis/dist/index.j
 import path from "path";
 
 // IMEI para debug selectivo
-let DEBUG_IMEI = process.env.DEBUG_IMEI || null;
-const logForImei = (imeiValue, ...args) => {
-  if (DEBUG_IMEI && String(imeiValue) === String(DEBUG_IMEI)) {
-  }
-};
+const DEBUG_IMEI = process.env.DEBUG_IMEI || "863719063825898";
+const DEBUG_IO_IDS = new Set([10800, 10801, 10802, 10803, 11317]);
 
 const __dirname = path.dirname(new URL(import.meta.url).pathname);
 dotenv.config({ path: path.resolve(__dirname, "../.env") });
@@ -314,19 +311,14 @@ ${JSON.stringify(ioMapToPrettyObject(io), null, 2)}`);
 ${JSON.stringify(eyeCandidates, null, 2)}`);
   }
 
-  const isDebugDevice = RAW_PACKET_HEX_DEVICE_IDS.has(Number(device?.device_id));
-  if (isDebugDevice) {
-    console.log(`🧪 Debug device raw ioElements | imei=${imei} device_id=${device?.device_id ?? "null"} event_id=${event_id}
-${JSON.stringify(Array.isArray(rec?.ioElements) ? rec.ioElements : [], null, 2)}`);
-    console.log(`🧪 Debug device raw record | imei=${imei} device_id=${device?.device_id ?? "null"} event_id=${event_id}
-${JSON.stringify(rec, null, 2)}`);
-  }
+  if (String(imei) === String(DEBUG_IMEI)) {
+    const debugIoElements = (Array.isArray(rec?.ioElements) ? rec.ioElements : [])
+      .filter((ioEl) => DEBUG_IO_IDS.has(Number(ioEl?.id)));
 
-  if (io.has(331)) {
-    console.log(`🧪 BLE raw ioElements (id 331 present) | imei=${imei} device_id=${device?.device_id ?? "null"} event_id=${event_id}
-${JSON.stringify(ioElements, null, 2)}`);
-    console.log(`🧪 BLE raw record (id 331 present) | imei=${imei} device_id=${device?.device_id ?? "null"} event_id=${event_id}
-${JSON.stringify(rec, null, 2)}`);
+    if (debugIoElements.length) {
+      console.log(`🧪 Debug selected ioElements | imei=${imei} device_id=${device?.device_id ?? "null"} event_id=${event_id}
+${JSON.stringify(debugIoElements, null, 2)}`);
+    }
   }
 
   const normalized = {
