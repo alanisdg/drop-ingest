@@ -8,7 +8,7 @@ import { createClient } from "/opt/ingest-shared/node_modules/redis/dist/index.j
 import path from "path";
 
 // IMEI para debug selectivo
-const DEBUG_IMEI = process.env.DEBUG_IMEI || "863719063825898";
+const DEBUG_IMEI = process.env.DEBUG_IMEI || "865124071209565";
 const DEBUG_IO_IDS = new Set([10800, 10801, 10802, 10803, 11317]);
 const logForImei = (imeiValue, ...args) => {
   if (String(imeiValue) === String(DEBUG_IMEI)) {
@@ -298,6 +298,10 @@ async function normalizeAvlRecord(imei, rec, rawPacketHex) {
   const mobileOperatorCode = getIo(io, 241);
   const extVoltage = toVoltageVolts(getIo(io, 66));
   const batteryPercent = toBatteryPercentFromMv(getIo(io, 67));
+  const tmp1Raw = getIo(io, 10800);
+  const tmp2Raw = getIo(io, 10801);
+  const tmp1 = toNumber(tmp1Raw);
+  const tmp2 = toNumber(tmp2Raw);
   const event_name = eventNameFromId(event_id);
   const unified = unifiedEventFromId(event_id);
   const updateTime = rec?.timestamp ? new Date(rec.timestamp) : null;
@@ -350,6 +354,8 @@ ${JSON.stringify(debugIoElements, null, 2)}`);
     odometroTotal: odometer,
     odometroReporte,
     distance_m_between_msgs: 0,
+    tmp1: tmp1 === null ? null : (tmp1 / 100),
+    tmp2: tmp2 === null ? null : (tmp2 / 100),
     ioelements: ioElements,
   };
 
