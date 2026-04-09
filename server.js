@@ -306,13 +306,14 @@ async function normalizeAvlRecord(imei, rec, rawPacketHex) {
   const device = await getDeviceFromImei(String(imei));
 
   if (String(imei) === String(DEBUG_IMEI)) {
+    console.log(`🧪 Debug raw record | imei=${imei} device_id=${device?.device_id ?? "null"} event_id=${event_id}
+${JSON.stringify(rec, null, 2)}`);
+
     const debugIoElements = (Array.isArray(rec?.ioElements) ? rec.ioElements : [])
       .filter((ioEl) => DEBUG_IO_IDS.has(Number(ioEl?.id)));
 
-    if (debugIoElements.length) {
-      console.log(`🧪 Debug selected ioElements | imei=${imei} device_id=${device?.device_id ?? "null"} event_id=${event_id}
+    console.log(`🧪 Debug selected ioElements | imei=${imei} device_id=${device?.device_id ?? "null"} event_id=${event_id}
 ${JSON.stringify(debugIoElements, null, 2)}`);
-    }
   }
 
   const normalized = {
@@ -434,11 +435,11 @@ async function insertDocsToMongo(docs) {
   const { weeklyGroups, dailyGroups } = groupDocsByCollections(filteredDocs);
 
   try {
-    for (const [, groupDocs] of weeklyGroups.entries()) {
-      await mongoDb.collection(getWeeklyCollectionName(groupDocs[0]?.update_time instanceof Date ? groupDocs[0].update_time : new Date())).insertMany(groupDocs, { ordered: true });
+    for (const [colName, groupDocs] of weeklyGroups.entries()) {
+      await mongoDb.collection(colName).insertMany(groupDocs, { ordered: true });
     }
-    for (const [, groupDocs] of dailyGroups.entries()) {
-      await mongoDb.collection(getDailyCollectionName(groupDocs[0]?.update_time instanceof Date ? groupDocs[0].update_time : new Date())).insertMany(groupDocs, { ordered: true });
+    for (const [colName, groupDocs] of dailyGroups.entries()) {
+      await mongoDb.collection(colName).insertMany(groupDocs, { ordered: true });
     }
 
     await publishDocsToRedisStream(filteredDocs);
@@ -490,6 +491,10 @@ async function handleIncomingPacket(data, socket, state) {
     }
 
     const avl = parser.getAvl();
+    if (String(imei) === String(DEBUG_IMEI)) {
+      console.log(`🧪 Debug raw TCP hex | imei=${imei}\n${data.toString("hex")}`);
+      console.log(`🧪 Debug parser AVL | imei=${imei}\n${JSON.stringify(avl ?? null, null, 2)}`);
+    }
     if (!avl || !avl.records || !Array.isArray(avl.records)) {
       console.log("📨 Teltonika non-AVL / possible GPRS response | imei=", imei ?? null, "hex=", data.toString("hex"));
       console.log("📨 Teltonika non-AVL / parser object:", JSON.stringify(avl ?? null, null, 2));
@@ -590,8 +595,3 @@ setInterval(async () => {
   try {
     await flushInsertBuffer();
   } catch (e) {
-    console.error(`❌ flushInsertBuffer failed: ${e?.message || e}`);
-  }
-}, 1000);
-
-export default server;
