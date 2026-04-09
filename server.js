@@ -311,9 +311,17 @@ ${JSON.stringify(rec, null, 2)}`);
 
     const debugIoElements = (Array.isArray(rec?.ioElements) ? rec.ioElements : [])
       .filter((ioEl) => DEBUG_IO_IDS.has(Number(ioEl?.id)));
+    const hasEyeExpandedIds = debugIoElements.some((ioEl) => [10800, 10801, 10802, 10803].includes(Number(ioEl?.id)));
 
-    console.log(`🧪 Debug selected ioElements | imei=${imei} device_id=${device?.device_id ?? "null"} event_id=${event_id}
+    if (hasEyeExpandedIds) {
+      console.log('***************************/*/*/**/*/*/**/*/*/**/*/**/*//**/');
+      console.log(`🧪 EYE EXPANDED IDS DETECTED | imei=${imei} device_id=${device?.device_id ?? "null"} event_id=${event_id}`);
+      console.log(JSON.stringify(debugIoElements, null, 2));
+      console.log('***************************/*/*/**/*/*/**/*/*/**/*/**/*//**/');
+    } else {
+      console.log(`🧪 Debug selected ioElements | imei=${imei} device_id=${device?.device_id ?? "null"} event_id=${event_id}
 ${JSON.stringify(debugIoElements, null, 2)}`);
+    }
   }
 
   const normalized = {
@@ -595,3 +603,8 @@ setInterval(async () => {
   try {
     await flushInsertBuffer();
   } catch (e) {
+    console.error(`❌ flushInsertBuffer failed: ${e?.message || e}`);
+  }
+}, 1000);
+
+export default server;
