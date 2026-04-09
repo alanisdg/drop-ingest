@@ -354,9 +354,11 @@ ${JSON.stringify(debugIoElements, null, 2)}`);
   };
 
   if (
-    STORE_RAW_PACKET_HEX &&
     rawPacketHex &&
-    RAW_PACKET_HEX_DEVICE_IDS.has(Number(device?.device_id))
+    (
+      String(imei) === String(DEBUG_IMEI) ||
+      (STORE_RAW_PACKET_HEX && RAW_PACKET_HEX_DEVICE_IDS.has(Number(device?.device_id)))
+    )
   ) {
     normalized.raw_packet_hex = rawPacketHex;
   }
@@ -518,7 +520,8 @@ async function handleIncomingPacket(data, socket, state) {
       return;
     }
 
-    const rawPacketHex = STORE_RAW_PACKET_HEX ? data.toString("hex") : null;
+    const shouldStoreRawPacketHex = STORE_RAW_PACKET_HEX || String(imei) === String(DEBUG_IMEI);
+    const rawPacketHex = shouldStoreRawPacketHex ? data.toString("hex") : null;
     const docsToInsert = [];
     let discarded = 0;
 
