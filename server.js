@@ -31,7 +31,7 @@ const RAW_PACKET_HEX_DEVICE_IDS = new Set(
 );
 const DEBUG_FILTERS = process.env.DEBUG_FILTERS === "true";
 const IGNORED_RAW_EVENTS = new Set(
-  String(process.env.IGNORED_RAW_EVENTS || "497,498,499,11317")
+  String(process.env.IGNORED_RAW_EVENTS || "497,498,499")
     .split(",")
     .map((v) => Number(String(v).trim()))
     .filter((v) => Number.isFinite(v))
