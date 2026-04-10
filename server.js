@@ -123,6 +123,57 @@ async function computeAndStoreOdometerDelta(imei, odometer, updateTime) {
   return delta;
 }
 
+const PERSISTED_SENSOR_FIELDS = ["tmp1", "tmp2", "humidity1", "humidity2", "magnet1", "magnet2"];
+
+function getSensorStateKey(imei) {
+  return `teltonika:last_sensor_state:${String(imei)}`;
+}
+
+async function applyPersistentSensorState(doc) {
+  if (!doc?.imei) {
+    return doc;
+  }
+
+  const key = getSensorStateKey(doc.imei);
+  let lastState = {};
+
+  try {
+    const raw = await redis.get(key);
+    if (raw) {
+      lastState = JSON.parse(raw) || {};
+    }
+  } catch (e) {
+    console.error(`❌ Invalid sensor state cache for ${doc.imei}:`, e?.message || e);
+  }
+
+  const merged = { ...doc };
+  const nextState = { ...lastState };
+
+  for (const field of PERSISTED_SENSOR_FIELDS) {
+    const currentValue = merged[field];
+
+    if (currentValue === null || currentValue === undefined) {
+      if (lastState[field] !== null && lastState[field] !== undefined) {
+        merged[field] = lastState[field];
+        merged[`${field}_source`] = "persisted";
+      } else {
+        merged[`${field}_source`] = "missing";
+      }
+    } else {
+      nextState[field] = currentValue;
+      merged[`${field}_source`] = "current";
+    }
+  }
+
+  nextState.updated_at = merged?.update_time instanceof Date && !Number.isNaN(merged.update_time.getTime())
+    ? merged.update_time.toISOString()
+    : new Date().toISOString();
+
+  await redis.set(key, JSON.stringify(nextState));
+
+  return merged;
+}
+
 const WEEKLY_COLLECTION_PREFIX = process.env.WEEKLY_COLLECTION_PREFIX || "drops_week_";
 const DAILY_COLLECTION_PREFIX = process.env.DAILY_COLLECTION_PREFIX || "drops_day_";
 
@@ -579,7 +630,8 @@ async function handleIncomingPacket(data, socket, state) {
       }
 
       const doc = await normalizeAvlRecord(imei, rec, rawPacketHex);
-      docsToInsert.push(doc);
+      const enrichedDoc = await applyPersistentSensorState(doc);
+      docsToInsert.push(enrichedDoc);
     }
 
     // Política de seguridad: solo ACK cuando los registros aceptados del paquete
