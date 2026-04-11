@@ -2,7 +2,7 @@
   "name": "drop-ingest",
   "version": "1.0.0",
   "description": "",
-  "main": "functions.js",
+  "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js"
@@ -14,9 +14,12 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "bugs": {
     "url": "https://github.com/alanisdg/drop-ingest/issues"
   },
-  "homepage": "https://github.com/alanisdg/drop-ingest#readme"
+  "homepage": "https://github.com/alanisdg/drop-ingest#readme",
+  "dependencies": {
+    "express": "^5.2.1"
+  }
 }
