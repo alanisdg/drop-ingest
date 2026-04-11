@@ -6,7 +6,7 @@ import { MongoClient } from "/opt/ingest-shared/node_modules/mongodb/lib/index.j
 import dotenv from "/opt/ingest-shared/node_modules/dotenv/lib/main.js";
 import { createClient } from "/opt/ingest-shared/node_modules/redis/dist/index.js";
 import path from "path";
-import { createServer as createHttpServer } from "node:http";
+import express from "express";
 import { registerSocket, bindImei, touch, unregisterSocket, getSnapshot } from "./sessions.js";
 
 // IMEI para debug selectivo
@@ -680,27 +680,29 @@ server.listen(PORT, "0.0.0.0", () =>
   console.log(`🚀 Teltonika TCP listening on ${PORT}`)
 );
 
-const SESSIONS_HTTP_PORT = process.env.SESSIONS_HTTP_PORT ? Number(process.env.SESSIONS_HTTP_PORT) : 5010;
+const HTTP_PORT = process.env.HTTP_PORT ? Number(process.env.HTTP_PORT) : 5010;
+const app = express();
 
-createHttpServer((req, res) => {
-  if (req.url === "/sessions") {
-    const snapshot = getSnapshot();
-    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify(snapshot, null, 2));
-    return;
-  }
+app.use(express.json());
 
-  if (req.url === "/sessions/imeis") {
-    const snapshot = getSnapshot();
-    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({ activeSessions: snapshot.activeSessions, activeImeis: snapshot.activeImeis }, null, 2));
-    return;
-  }
+app.get("/sessions", (req, res) => {
+  const snapshot = getSnapshot();
+  res.json(snapshot);
+});
 
-  res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-  res.end("Not found");
-}).listen(SESSIONS_HTTP_PORT, "0.0.0.0", () => {
-  console.log(`📡 Sessions debug HTTP listening on ${SESSIONS_HTTP_PORT}`);
+app.get("/sessions/imeis", (req, res) => {
+  const snapshot = getSnapshot();
+  res.json({ activeSessions: snapshot.activeSessions, activeImeis: snapshot.activeImeis });
+});
+
+app.post("/send-command", (req, res) => {
+  const { imei = null, command = null, payload = null } = req.body || {};
+  console.log("📨 /send-command recibido:", JSON.stringify({ imei, command, payload }, null, 2));
+  res.json({ ok: true, received: { imei, command, payload } });
+});
+
+app.listen(HTTP_PORT, "0.0.0.0", () => {
+  console.log(`📡 Express HTTP listening on ${HTTP_PORT}`);
 });
 
 /* ------------------------------------ */
