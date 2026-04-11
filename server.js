@@ -7,7 +7,7 @@ import dotenv from "/opt/ingest-shared/node_modules/dotenv/lib/main.js";
 import { createClient } from "/opt/ingest-shared/node_modules/redis/dist/index.js";
 import path from "path";
 import express from "express";
-import { registerSocket, bindImei, touch, unregisterSocket, getSnapshot } from "./sessions.js";
+import { registerSocket, bindImei, touch, unregisterSocket, getSnapshot, getSessionByImei, markCommandSent, clearPendingCommand } from "./sessions.js";
 
 // IMEI para debug selectivo
 const DEBUG_IMEI = process.env.DEBUG_IMEI || "865124071209565";
@@ -40,6 +40,59 @@ const IGNORED_RAW_EVENTS = new Set(
     .map((v) => Number(String(v).trim()))
     .filter((v) => Number.isFinite(v))
 );
+
+function getCRC16(buffer) {
+  let crc = 0x0000;
+  for (let i = 0; i < buffer.length; i += 1) {
+    crc ^= buffer[i];
+    for (let j = 0; j < 8; j += 1) {
+      if (crc & 0x0001) {
+        crc = (crc >> 1) ^ 0xA001;
+      } else {
+        crc >>= 1;
+      }
+    }
+  }
+  return crc & 0xFFFF;
+}
+
+function buildTeltonikaCommand(commandStr) {
+  const cmdBuffer = Buffer.from(String(commandStr), "ascii");
+  const cmdSize = cmdBuffer.length;
+  const dataPartSize = 1 + 1 + 1 + 4 + cmdSize + 1;
+  const dataPart = Buffer.alloc(dataPartSize);
+
+  let offset = 0;
+  dataPart.writeUInt8(0x0c, offset++);
+  dataPart.writeUInt8(0x01, offset++);
+  dataPart.writeUInt8(0x05, offset++);
+  dataPart.writeUInt32BE(cmdSize, offset);
+  offset += 4;
+  cmdBuffer.copy(dataPart, offset);
+  offset += cmdSize;
+  dataPart.writeUInt8(0x01, offset++);
+
+  const packetSize = 4 + 4 + dataPartSize + 4;
+  const finalPacket = Buffer.alloc(packetSize);
+
+  offset = 0;
+  finalPacket.writeUInt32BE(0x00000000, offset);
+  offset += 4;
+  finalPacket.writeUInt32BE(dataPartSize, offset);
+  offset += 4;
+  dataPart.copy(finalPacket, offset);
+  offset += dataPartSize;
+
+  const crc = getCRC16(dataPart);
+  finalPacket.writeUInt32BE(crc, offset);
+
+  return finalPacket;
+}
+
+function maybeCommandWrite(socket, payload, label = "command.write") {
+  maybeWrite(socket, payload, label);
+  return true;
+}
 
 // Nota: TCP mirroring / forwarding removido (ingestor mínimo)
 
@@ -585,6 +638,7 @@ async function handleIncomingPacket(data, socket, state) {
       console.log(`🧪 Debug parser AVL | imei=${imei}\n${JSON.stringify(avl ?? null, null, 2)}`);
     }
     if (!avl || !avl.records || !Array.isArray(avl.records)) {
+      clearPendingCommand(socket);
       console.log("📨 Teltonika non-AVL / possible GPRS response | imei=", imei ?? null, "hex=", data.toString("hex"));
       console.log("📨 Teltonika non-AVL / parser object:", JSON.stringify(avl ?? null, null, 2));
       return;
@@ -696,9 +750,36 @@ app.get("/sessions/imeis", (req, res) => {
 });
 
 app.post("/send-command", (req, res) => {
-  const { imei = null, command = null, payload = null } = req.body || {};
-  console.log("📨 /send-command recibido:", JSON.stringify({ imei, command, payload }, null, 2));
-  res.json({ ok: true, received: { imei, command, payload } });
+  console.log("🚀 Command API received:", req.body);
+
+  const { imei, command } = req.body || {};
+
+  if (!imei || !command) {
+    return res.status(400).json({ error: "Missing imei or command" });
+  }
+
+  const session = getSessionByImei(String(imei));
+  if (!session || !session.socket || session.socket.destroyed) {
+    return res.status(404).json({ error: "Device not connected" });
+  }
+
+  try {
+    const payload = buildTeltonikaCommand(command);
+
+    markCommandSent(session.socket, command, payload);
+    maybeCommandWrite(session.socket, payload, "send-command");
+
+    return res.json({
+      success: true,
+      imei: String(imei),
+      command,
+      hex: payload.toString("hex"),
+      sessionId: session.id,
+    });
+  } catch (err) {
+    console.error("❌ Error sending command:", err);
+    return res.status(500).json({ error: "Failed to send command" });
+  }
 });
 
 app.listen(HTTP_PORT, "0.0.0.0", () => {
