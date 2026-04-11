@@ -9,6 +9,11 @@ function socketId(socket) {
   return `${socket.remoteAddress || 'unknown'}:${socket.remotePort || 0}->${socket.localPort || 0}`;
 }
 
+function serializeSession(session) {
+  const { socket, ...rest } = session;
+  return { ...rest };
+}
+
 function upsertSession(socket) {
   const id = socketId(socket);
   let session = sessionsBySocketId.get(id);
@@ -16,6 +21,7 @@ function upsertSession(socket) {
   if (!session) {
     session = {
       id,
+      socket,
       imei: null,
       remoteAddress: socket.remoteAddress || null,
       remotePort: socket.remotePort || null,
@@ -24,8 +30,15 @@ function upsertSession(socket) {
       lastSeenAt: nowIso(),
       bytesIn: 0,
       bytesOut: 0,
+      lastCommand: null,
+      lastCommandHex: null,
+      lastCommandAt: null,
+      pendingCommand: null,
+      pendingCommandAt: null,
     };
     sessionsBySocketId.set(id, session);
+  } else {
+    session.socket = socket;
   }
 
   return session;
@@ -73,6 +86,24 @@ export function touch(socket, bytesIn = 0, bytesOut = 0) {
   return session;
 }
 
+export function markCommandSent(socket, command, payload) {
+  const session = upsertSession(socket);
+  session.lastSeenAt = nowIso();
+  session.lastCommand = command ?? null;
+  session.lastCommandHex = Buffer.isBuffer(payload) ? payload.toString('hex') : null;
+  session.lastCommandAt = nowIso();
+  session.pendingCommand = command ?? null;
+  session.pendingCommandAt = Date.now();
+  return session;
+}
+
+export function clearPendingCommand(socket) {
+  const session = upsertSession(socket);
+  session.pendingCommand = null;
+  session.pendingCommandAt = null;
+  return session;
+}
+
 export function unregisterSocket(socket) {
   const id = socketId(socket);
   const session = sessionsBySocketId.get(id);
@@ -82,13 +113,36 @@ export function unregisterSocket(socket) {
   return true;
 }
 
+export function getSessionByImei(imei) {
+  const set = socketsByImei.get(String(imei));
+  if (!set || !set.size) return null;
+
+  for (const id of set) {
+    const session = sessionsBySocketId.get(id);
+    if (session?.socket && !session.socket.destroyed) {
+      return session;
+    }
+  }
+
+  return null;
+}
+
+export function getSessionsByImei(imei) {
+  const set = socketsByImei.get(String(imei));
+  if (!set || !set.size) return [];
+
+  return [...set]
+    .map((id) => sessionsBySocketId.get(id))
+    .filter((session) => session?.socket && !session.socket.destroyed);
+}
+
 export function countSessions() {
   return sessionsBySocketId.size;
 }
 
 export function listSessions() {
   return [...sessionsBySocketId.values()]
-    .map((session) => ({ ...session }))
+    .map((session) => serializeSession(session))
     .sort((a, b) => {
       const ai = a.imei || '';
       const bi = b.imei || '';
@@ -126,5 +180,6 @@ export function printSnapshot() {
     lastSeenAt: s.lastSeenAt,
     bytesIn: s.bytesIn,
     bytesOut: s.bytesOut,
+    pendingCommand: s.pendingCommand || '',
   })));
 }
