@@ -6,6 +6,8 @@ import { MongoClient } from "/opt/ingest-shared/node_modules/mongodb/lib/index.j
 import dotenv from "/opt/ingest-shared/node_modules/dotenv/lib/main.js";
 import { createClient } from "/opt/ingest-shared/node_modules/redis/dist/index.js";
 import path from "path";
+import { createServer as createHttpServer } from "node:http";
+import { registerSocket, bindImei, touch, unregisterSocket, getSnapshot } from "./sessions.js";
 
 // IMEI para debug selectivo
 const DEBUG_IMEI = process.env.DEBUG_IMEI || "865124071209565";
@@ -47,6 +49,8 @@ function maybeWrite(socket, payload, label = "socket.write") {
   }
   try {
     socket.write(payload);
+    const bytesOut = Buffer.isBuffer(payload) ? payload.length : Buffer.byteLength(String(payload));
+    touch(socket, 0, bytesOut);
   } catch (e) {
     console.error(`❌ Failed ${label}:`, e);
   }
@@ -551,6 +555,7 @@ async function flushInsertBuffer() {
 }
 
 async function handleIncomingPacket(data, socket, state) {
+  touch(socket, data.length, 0);
   let imei = state.imei;
 
   logForImei(imei, "📦 TCP bytes:", data.length);
@@ -568,6 +573,7 @@ async function handleIncomingPacket(data, socket, state) {
         return;
       }
 
+      bindImei(socket, state.imei);
       logForImei(state.imei, "✔ IMEI:", state.imei);
       maybeWrite(socket, Buffer.from([0x01]), "IMEI ACK");
       return;
@@ -654,6 +660,7 @@ async function handleIncomingPacket(data, socket, state) {
 }
 
 const server = net.createServer((socket) => {
+  registerSocket(socket);
   const state = { imei: null, deviceName: null };
 
   socket.on("data", async (data) => {
@@ -661,7 +668,7 @@ const server = net.createServer((socket) => {
   });
 
   const cleanup = () => {
-    return;
+    unregisterSocket(socket);
   };
 
   socket.on('close', cleanup);
@@ -672,6 +679,29 @@ const server = net.createServer((socket) => {
 server.listen(PORT, "0.0.0.0", () =>
   console.log(`🚀 Teltonika TCP listening on ${PORT}`)
 );
+
+const SESSIONS_HTTP_PORT = process.env.SESSIONS_HTTP_PORT ? Number(process.env.SESSIONS_HTTP_PORT) : 5010;
+
+createHttpServer((req, res) => {
+  if (req.url === "/sessions") {
+    const snapshot = getSnapshot();
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(snapshot, null, 2));
+    return;
+  }
+
+  if (req.url === "/sessions/imeis") {
+    const snapshot = getSnapshot();
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ activeSessions: snapshot.activeSessions, activeImeis: snapshot.activeImeis }, null, 2));
+    return;
+  }
+
+  res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+  res.end("Not found");
+}).listen(SESSIONS_HTTP_PORT, "0.0.0.0", () => {
+  console.log(`📡 Sessions debug HTTP listening on ${SESSIONS_HTTP_PORT}`);
+});
 
 /* ------------------------------------ */
 /* BATCH INSERT                         */
