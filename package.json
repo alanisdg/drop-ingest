@@ -20,6 +20,12 @@
   },
   "homepage": "https://github.com/alanisdg/drop-ingest#readme",
   "dependencies": {
-    "express": "^5.2.1"
+    "binutils64": "^0.1.3",
+    "dgram": "^1.0.1",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "mongodb": "^7.1.1",
+    "redis": "^5.12.1",
+    "teltonika-parser-extended": "^1.0.1"
   }
 }
