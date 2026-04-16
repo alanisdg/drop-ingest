@@ -848,5 +848,27 @@ setInterval(async () => {
     console.error(`❌ flushInsertBuffer failed: ${e?.message || e}`);
   }
 }, 1000);
+function decodeTeltonikaResponse(buffer) {
+  // 1. Verificaciones básicas de seguridad (longitud mínima y Codec 12)
+  // Offset 8 es donde vive el ID del Codec. 0x0C es Codec 12.
+  if (buffer.length < 15 || buffer.readUInt8(8) !== 0x0C) {
+    return null; 
+  }
 
+  try {
+    // 2. Leer el tamaño del texto de respuesta
+    // Estructura TCP: [4 ceros][4 len][Codec(1)][Cnt(1)][Type(1)][TextLen(4)]...
+    // Los índices son: 0..3     4..7    8         9       10       11..14
+    const textLength = buffer.readUInt32BE(11);
+
+    // 3. Extraer el texto ASCII
+    // El texto empieza en el byte 15 y termina en 15 + longitud
+    const message = buffer.toString("ascii", 15, 15 + textLength);
+
+    return message;
+  } catch (error) {
+    console.error("❌ Error al decodificar respuesta GPS:", error);
+    return null;
+  }
+}
 export default server;
