@@ -67,37 +67,45 @@ function getCRC16(buffer) {
 }
 
 function buildTeltonikaCommand(commandStr) {
-  const cmdBuffer = Buffer.from(String(commandStr), "ascii");
+  const cmdBuffer = Buffer.from(commandStr, "ascii");
   const cmdSize = cmdBuffer.length;
+
+  // --- 1. Construir la parte de DATOS (Data Part) ---
+  // Codec ID (1) + Cmd Count (1) + Type (1) + Size (4) + Data + Cmd Count (1)
+  // Type 0x05 = Command, 0x06 = Answer
   const dataPartSize = 1 + 1 + 1 + 4 + cmdSize + 1;
   const dataPart = Buffer.alloc(dataPartSize);
 
   let offset = 0;
-  dataPart.writeUInt8(0x0c, offset++);
-  dataPart.writeUInt8(0x01, offset++);
-  dataPart.writeUInt8(0x05, offset++);
-  dataPart.writeUInt32BE(cmdSize, offset);
+  dataPart.writeUInt8(0x0c, offset++); // Codec 12
+  dataPart.writeUInt8(0x01, offset++); // Command Count 1
+  dataPart.writeUInt8(0x05, offset++); // Type: 05 (Command)
+  dataPart.writeUInt32BE(cmdSize, offset); // Tamaño del texto del comando
   offset += 4;
-  cmdBuffer.copy(dataPart, offset);
+  cmdBuffer.copy(dataPart, offset); // El texto del comando
   offset += cmdSize;
-  dataPart.writeUInt8(0x01, offset++);
+  dataPart.writeUInt8(0x01, offset++); // Command Count 2
 
+  // --- 2. Construir el paquete TCP completo ---
+  // 4 ceros + 4 bytes longitud de dataPart + dataPart + 4 bytes CRC
   const packetSize = 4 + 4 + dataPartSize + 4;
   const finalPacket = Buffer.alloc(packetSize);
 
   offset = 0;
-  finalPacket.writeUInt32BE(0x00000000, offset);
+  finalPacket.writeUInt32BE(0x00000000, offset); // 4 bytes de ceros
   offset += 4;
-  finalPacket.writeUInt32BE(dataPartSize, offset);
+  finalPacket.writeUInt32BE(dataPartSize, offset); // Longitud de los datos
   offset += 4;
-  dataPart.copy(finalPacket, offset);
+  dataPart.copy(finalPacket, offset); // Copiar la parte de datos
   offset += dataPartSize;
 
+  // Calcular CRC de la Data Part (NO incluye los 4 ceros ni la longitud inicial)
   const crc = getCRC16(dataPart);
-  finalPacket.writeUInt32BE(crc, offset);
+  finalPacket.writeUInt32BE(crc, offset); // CRC al final
 
   return finalPacket;
 }
+
 
 function maybeCommandWrite(socket, payload, label = "command.write") {
   maybeWrite(socket, payload, label);
@@ -649,6 +657,38 @@ async function handleIncomingPacket(data, socket, state) {
     }
     if (!avl || !avl.records || !Array.isArray(avl.records)) {
       clearPendingCommand(socket);
+       const responseText = decodeTeltonikaResponse(data);
+        if (responseText) {
+           //   logForImei(imei, `💬 RESPUESTA DEL GPS (${imei || 'Desconocido'}):`);
+            //  logForImei(imei, `   "${responseText}"`);
+             // logForImei(imei, 'emitiendo a gps_response_' + imei );
+              // If we recently sent a command, log the response for debugging.
+              try {
+                const session = imei ? sessions.get(imei) : null;
+                const pending = session?.pendingCmd;
+                const pendingAt = session?.pendingCmdAt;
+                if (pending) {
+                  const ageMs = pendingAt ? (Date.now() - pendingAt) : null;
+                  console.log(`✅ Command response from ${imei} (pending=${pending}${ageMs !== null ? ` age=${ageMs}ms` : ''}): ${responseText}`);
+                  // clear pending once we get any Codec12 response
+                  session.pendingCmd = null;
+                  session.pendingCmdAt = null;
+                } else {
+                  // keep quiet by default
+                  // console.log(`💬 GPS response from ${imei}: ${responseText}`);
+                }
+              } catch (e) {
+                // ignore
+              }
+/*
+              io.sockets.emit("gps_response_" + imei, {
+                imei: imei || null,
+                message: responseText,
+              });*/
+              // IMPORTANTE: Si es una respuesta de comando, hacemos return
+              // para no intentar procesarlo como coordenadas GPS (daria error).
+              return; 
+            }
       console.log("📨 Teltonika non-AVL / possible GPRS response | imei=", imei ?? null, "hex=", data.toString("hex"));
       console.log("📨 Teltonika non-AVL / parser object:", JSON.stringify(avl ?? null, null, 2));
       return;
@@ -765,10 +805,12 @@ app.post("/send-command", (req, res) => {
   const { imei, command } = req.body || {};
 
   if (!imei || !command) {
+    console.log("❌ Command API - missing imei or command");
     return res.status(400).json({ error: "Missing imei or command" });
   }
-
+console.log("✅ Command API - imei:", imei, "command:", command);
   const session = getSessionByImei(String(imei));
+  console.log("✅ Command API - session:", session);
   if (!session || !session.socket || session.socket.destroyed) {
     return res.status(404).json({ error: "Device not connected" });
   }
