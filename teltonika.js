@@ -656,37 +656,21 @@ async function handleIncomingPacket(data, socket, state) {
       console.log(`🧪 Debug parser AVL | imei=${imei}\n${JSON.stringify(avl ?? null, null, 2)}`);
     }
             const responseText = decodeTeltonikaResponse(data);
-        if (responseText) {
-           //   logForImei(imei, `💬 RESPUESTA DEL GPS (${imei || 'Desconocido'}):`);
-            //  logForImei(imei, `   "${responseText}"`);
-             // logForImei(imei, 'emitiendo a gps_response_' + imei );
-              // If we recently sent a command, log the response for debugging.
-              try {
-                const session = imei ? sessions.get(imei) : null;
-                const pending = session?.pendingCmd;
-                const pendingAt = session?.pendingCmdAt;
-                if (pending) {
-                  const ageMs = pendingAt ? (Date.now() - pendingAt) : null;
-                  console.log(`✅ Command response from ${imei} (pending=${pending}${ageMs !== null ? ` age=${ageMs}ms` : ''}): ${responseText}`);
-                  // clear pending once we get any Codec12 response
-                  session.pendingCmd = null;
-                  session.pendingCmdAt = null;
-                } else {
-                  // keep quiet by default
-                  // console.log(`💬 GPS response from ${imei}: ${responseText}`);
-                }
-              } catch (e) {
-                // ignore
-              }
-/*
-              io.sockets.emit("gps_response_" + imei, {
-                imei: imei || null,
-                message: responseText,
-              });*/
-              // IMPORTANTE: Si es una respuesta de comando, hacemos return
-              // para no intentar procesarlo como coordenadas GPS (daria error).
-              return; 
-        }
+if (responseText) {
+  try {
+    const session = imei ? getSessionByImei(String(imei)) : null;
+    const pending = session?.pendingCmd;
+    const pendingAt = session?.pendingCmdAt;
+    if (pending) {
+      const ageMs = pendingAt ? (Date.now() - pendingAt) : null;
+      console.log(`✅ Command response from ${imei} (pending=${pending}${ageMs !== null ? ` age=${ageMs}ms` : ''}): ${responseText}`);
+      clearPendingCommand(session.socket);
+    }
+  } catch (e) {
+    console.error('❌ Error procesando respuesta comando:', e);
+  }
+  return; // ← ahora sí llega aquí
+}
     if (!avl || !avl.records || !Array.isArray(avl.records)) {
         clearPendingCommand(socket);
 
