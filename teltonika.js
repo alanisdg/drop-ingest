@@ -655,9 +655,7 @@ async function handleIncomingPacket(data, socket, state) {
       console.log(`🧪 Debug raw TCP hex | imei=${imei}\n${data.toString("hex")}`);
       console.log(`🧪 Debug parser AVL | imei=${imei}\n${JSON.stringify(avl ?? null, null, 2)}`);
     }
-    if (!avl || !avl.records || !Array.isArray(avl.records)) {
-      clearPendingCommand(socket);
-       const responseText = decodeTeltonikaResponse(data);
+            const responseText = decodeTeltonikaResponse(data);
         if (responseText) {
            //   logForImei(imei, `💬 RESPUESTA DEL GPS (${imei || 'Desconocido'}):`);
             //  logForImei(imei, `   "${responseText}"`);
@@ -688,7 +686,10 @@ async function handleIncomingPacket(data, socket, state) {
               // IMPORTANTE: Si es una respuesta de comando, hacemos return
               // para no intentar procesarlo como coordenadas GPS (daria error).
               return; 
-            }
+        }
+    if (!avl || !avl.records || !Array.isArray(avl.records)) {
+        clearPendingCommand(socket);
+
       console.log("📨 Teltonika non-AVL / possible GPRS response | imei=", imei ?? null, "hex=", data.toString("hex"));
       console.log("📨 Teltonika non-AVL / parser object:", JSON.stringify(avl ?? null, null, 2));
       return;
