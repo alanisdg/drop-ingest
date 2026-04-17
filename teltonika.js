@@ -656,6 +656,8 @@ async function handleIncomingPacket(data, socket, state) {
       console.log(`🧪 Debug parser AVL | imei=${imei}\n${JSON.stringify(avl ?? null, null, 2)}`);
     }
             const responseText = decodeTeltonikaResponse(data);
+            console.log('la respues es ');
+            console.log(responseText);
 if (responseText) {
   try {
     const session = imei ? getSessionByImei(String(imei)) : null;
@@ -794,8 +796,7 @@ app.post("/send-command", (req, res) => {
     return res.status(400).json({ error: "Missing imei or command" });
   }
 console.log("✅ Command API - imei:", imei, "command:", command);
-  const session = getSessionByImei(String(imei));
-  console.log("✅ Command API - session:", session);
+  const session = getSessionByImei(String(imei)); 
   if (!session || !session.socket || session.socket.destroyed) {
     return res.status(404).json({ error: "Device not connected" });
   }
