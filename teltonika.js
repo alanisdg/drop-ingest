@@ -50,6 +50,12 @@ const IGNORED_RAW_EVENTS = new Set(
     .map((v) => Number(String(v).trim()))
     .filter((v) => Number.isFinite(v))
 );
+const ODOMETER_EXCLUDED_EVENTS = new Set(
+  String(process.env.ODOMETER_EXCLUDED_EVENTS || "11317")
+    .split(",")
+    .map((v) => Number(String(v).trim()))
+    .filter((v) => Number.isFinite(v))
+);
 
 function getCRC16(buffer) {
   let crc = 0x0000;
@@ -137,6 +143,35 @@ await mongoClient.connect();
 
 const mongoDb = mongoClient.db(process.env.DB_MONGO_DATABASE);
 
+const ensuredIndexes = new Set();
+
+async function ensureDropsIndexes(collectionName) {
+  if (ensuredIndexes.has(collectionName)) {
+    return;
+  }
+
+  const collection = mongoDb.collection(collectionName);
+
+  await collection.createIndex(
+    { device_id: 1, update_time: 1 },
+    {
+      name: "device_id_1_update_time_1",
+      background: true,
+    }
+  );
+
+  await collection.createIndex(
+    { customer_id: 1, update_time: 1 },
+    {
+      name: "customer_id_1_update_time_1",
+      background: true,
+    }
+  );
+
+  ensuredIndexes.add(collectionName);
+  console.log(`✅ Mongo indexes ensured: ${collectionName}`);
+}
+
 const redis = createClient({
   socket: {
     host: process.env.REDIS_HOST || "10.124.0.6",
@@ -165,9 +200,12 @@ function getLastOdometerKey(imei) {
   return `teltonika:last_odometer:${imei}`;
 }
 
-async function computeAndStoreOdometerDelta(imei, odometer, updateTime) {
+async function computeAndStoreOdometerDelta(imei, odometer, updateTime, options = {}) {
   const current = toNumber(odometer);
-  if (current === null) {
+  const shouldUpdateCache = options?.shouldUpdateCache !== false;
+  const shouldComputeDelta = options?.shouldComputeDelta !== false;
+
+  if (current === null || current <= 0) {
     return 0;
   }
 
@@ -175,11 +213,11 @@ async function computeAndStoreOdometerDelta(imei, odometer, updateTime) {
   const previousRaw = await redis.get(key);
   let delta = 0;
 
-  if (previousRaw) {
+  if (shouldComputeDelta && previousRaw) {
     try {
       const previous = JSON.parse(previousRaw);
       const previousOdometer = toNumber(previous?.odometer);
-      if (previousOdometer !== null) {
+      if (previousOdometer !== null && previousOdometer > 0) {
         const computed = current - previousOdometer;
         delta = computed > 0 ? computed : 0;
       }
@@ -188,12 +226,14 @@ async function computeAndStoreOdometerDelta(imei, odometer, updateTime) {
     }
   }
 
-  await redis.set(key, JSON.stringify({
-    odometer: current,
-    update_time: updateTime instanceof Date && !Number.isNaN(updateTime.getTime())
-      ? updateTime.toISOString()
-      : updateTime ?? null,
-  }));
+  if (shouldUpdateCache) {
+    await redis.set(key, JSON.stringify({
+      odometer: current,
+      update_time: updateTime instanceof Date && !Number.isNaN(updateTime.getTime())
+        ? updateTime.toISOString()
+        : updateTime ?? null,
+    }));
+  }
 
   return delta;
 }
@@ -406,6 +446,10 @@ function isIgnoredMongoDoc(doc) {
   return IGNORED_RAW_EVENTS.has(Number(doc?.event_id ?? doc?.event_code));
 }
 
+function hasRelevantSensorValues(doc) {
+  return PERSISTED_SENSOR_FIELDS.some((field) => doc?.[field] !== null && doc?.[field] !== undefined);
+}
+
 
 async function normalizeAvlRecord(imei, rec, rawPacketHex) {
   const ioElements = Array.isArray(rec?.ioElements)
@@ -439,7 +483,12 @@ async function normalizeAvlRecord(imei, rec, rawPacketHex) {
   const event_name = eventNameFromId(event_id);
   const unified = unifiedEventFromId(event_id);
   const updateTime = rec?.timestamp ? new Date(rec.timestamp) : null;
-  const odometroReporte = await computeAndStoreOdometerDelta(imei, odometer, updateTime);
+  const excludeOdometer = ODOMETER_EXCLUDED_EVENTS.has(Number(event_id));
+  const odometerForKms = excludeOdometer ? null : odometer;
+  const odometroReporte = await computeAndStoreOdometerDelta(imei, odometerForKms, updateTime, {
+    shouldComputeDelta: !excludeOdometer,
+    shouldUpdateCache: !excludeOdometer,
+  });
 
   const device = await getDeviceFromImei(String(imei));
 
@@ -473,7 +522,7 @@ ${JSON.stringify(debugIoElements, null, 2)}`);
     satelites: toNumber(rec?.satelites ?? rec?.satellites ?? gps?.satellites),
     operator: mobileOperatorCode ?? null,
     rssi: -103,
-    odometer,
+    odometer: odometerForKms,
     powerSupply: extVoltage,
     powerBat: batteryPercent,
     event_code: Number(event_id) || 0,
@@ -485,7 +534,7 @@ ${JSON.stringify(debugIoElements, null, 2)}`);
     unified_event_name: unified.unified_event_name,
     stoped: stoppedFromSpeed(speedNum),
     update_time: updateTime,
-    odometroTotal: odometer,
+    odometroTotal: odometerForKms,
     odometroReporte,
     distance_m_between_msgs: 0,
     tmp1: tmp1 === null ? null : (tmp1 / 100),
@@ -594,9 +643,11 @@ async function insertDocsToMongo(docs) {
 
   try {
     for (const [colName, groupDocs] of weeklyGroups.entries()) {
+      await ensureDropsIndexes(colName);
       await mongoDb.collection(colName).insertMany(groupDocs, { ordered: true });
     }
     for (const [colName, groupDocs] of dailyGroups.entries()) {
+      await ensureDropsIndexes(colName);
       await mongoDb.collection(colName).insertMany(groupDocs, { ordered: true });
     }
 
@@ -718,6 +769,13 @@ if (responseText) {
         }
         continue;
       }
+      if (Number(rawEventCode) !== 0) {
+        discarded += 1;
+        if (DEBUG_FILTERS || String(imei) === String(DEBUG_IMEI)) {
+          console.log('skip record', JSON.stringify({ imei, rawEventCode, reason: 'non_periodic_event_only_event_0_persisted' }));
+        }
+        continue;
+      }
       if (!hasValidGPS(rec)) {
         discarded += 1;
         if (DEBUG_FILTERS) {
@@ -727,6 +785,15 @@ if (responseText) {
       }
 
       const doc = await normalizeAvlRecord(imei, rec, rawPacketHex);
+
+      if (ODOMETER_EXCLUDED_EVENTS.has(Number(doc?.event_id)) && !hasRelevantSensorValues(doc)) {
+        if (DEBUG_FILTERS) {
+          console.log('skip record', JSON.stringify({ imei, rawEventCode, reason: 'odometer_excluded_without_sensor_values' }));
+        }
+        discarded += 1;
+        continue;
+      }
+
       const enrichedDoc = await applyPersistentSensorState(doc);
       docsToInsert.push(enrichedDoc);
     }
