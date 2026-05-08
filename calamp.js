@@ -142,6 +142,49 @@ async function getDeviceFromImei(imei) {
   return JSON.parse(data);
 }
 
+function toNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function getLastOdometerKey(imei) {
+  return `calamp:last_odometer:${imei}`;
+}
+
+async function computeAndStoreOdometerDelta(imei, odometer, updateTime) {
+  const current = toNumber(odometer);
+
+  if (current === null || current <= 0) {
+    return 0;
+  }
+
+  const key = getLastOdometerKey(String(imei));
+  const previousRaw = await redis.get(key);
+  let delta = 0;
+
+  if (previousRaw) {
+    try {
+      const previous = JSON.parse(previousRaw);
+      const previousOdometer = toNumber(previous?.odometer);
+      if (previousOdometer !== null && previousOdometer > 0) {
+        const computed = current - previousOdometer;
+        delta = computed > 0 ? computed : 0;
+      }
+    } catch (e) {
+      console.error(`❌ Invalid previous odometer cache for ${imei}:`, e?.message || e);
+    }
+  }
+
+  await redis.set(key, JSON.stringify({
+    odometer: current,
+    update_time: updateTime instanceof Date && !Number.isNaN(updateTime.getTime())
+      ? updateTime.toISOString()
+      : updateTime ?? null,
+  }));
+
+  return delta;
+}
+
 function extractCalampImei(hex) {
   return hex?.substring(4, 19) || null;
 }
@@ -190,6 +233,7 @@ function parseCalamp(hex) {
 
 async function normalizeCalampPacket(packet, rawPacketHex) {
   const device = await getDeviceFromImei(String(packet.imei));
+  const odometroReporte = await computeAndStoreOdometerDelta(packet.imei, packet.odometroTotal, packet.update_time);
   const normalized = {
     imei: String(packet.imei),
     device_id: device?.device_id ?? null,
@@ -213,8 +257,8 @@ async function normalizeCalampPacket(packet, rawPacketHex) {
     stoped: Number(packet.speed) <= 0 ? 1 : 0,
     update_time: packet.update_time instanceof Date ? packet.update_time : new Date(packet.update_time),
     odometroTotal: Number(packet.odometroTotal) || 0,
-    odometroReporte: Number(packet.odometroReporte) || 0,
-    distance_m_between_msgs: Number(packet.distance_m_between_msgs) || 0,
+    odometroReporte,
+    distance_m_between_msgs: odometroReporte,
   };
 
   if (STORE_RAW_PACKET_HEX && rawPacketHex) {
