@@ -750,9 +750,10 @@ if (responseText) {
       const rawEventCode = rec?.event_id ?? rec?.eventId ?? null;
       const rawDevice = imei ? await getDeviceFromImei(String(imei)) : null;
       if (Number(rawDevice?.device_id) === 4292) {
-        const rawTmp1 = toNumber(getIo(ioMapFromRecord(rec), 10800));
-        const rawTmp2 = toNumber(getIo(ioMapFromRecord(rec), 10801));
-        console.log(`🧪 RAW device_id=4292 lat=${rec?.lat ?? rec?.latitude ?? rec?.gps?.latitude} lng=${rec?.lng ?? rec?.longitude ?? rec?.gps?.longitude} tmp1=${rawTmp1 === null ? null : (rawTmp1 / 100)} tmp2=${rawTmp2 === null ? null : (rawTmp2 / 100)}`);
+        const rawIoMap = ioMapFromRecord(rec);
+        const rawTmp1 = toNumber(getIo(rawIoMap, 10800));
+        const rawTmp2 = toNumber(getIo(rawIoMap, 10801));
+        console.log(`🧪 RAW device_id=4292 lat=${rec?.lat ?? rec?.latitude ?? rec?.gps?.latitude} lng=${rec?.lng ?? rec?.longitude ?? rec?.gps?.longitude} tmp1Raw=${rawTmp1} tmp2Raw=${rawTmp2} tmp1=${rawTmp1 === null ? null : (rawTmp1 / 100)} tmp2=${rawTmp2 === null ? null : (rawTmp2 / 100)}`);
       }
       const gps = {
         lat: rec?.lat ?? rec?.latitude ?? rec?.gps?.latitude,
