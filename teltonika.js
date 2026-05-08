@@ -50,12 +50,6 @@ const IGNORED_RAW_EVENTS = new Set(
     .map((v) => Number(String(v).trim()))
     .filter((v) => Number.isFinite(v))
 );
-const ODOMETER_EXCLUDED_EVENTS = new Set(
-  String(process.env.ODOMETER_EXCLUDED_EVENTS || "11317")
-    .split(",")
-    .map((v) => Number(String(v).trim()))
-    .filter((v) => Number.isFinite(v))
-);
 
 function getCRC16(buffer) {
   let crc = 0x0000;
@@ -411,6 +405,19 @@ function toBatteryPercentFromMv(rawMv) {
   return Number(((n / 43.77256539235412)).toFixed(2));
 }
 
+function normalizeRssiToDbm(value) {
+  const n = toNumber(value);
+  if (n === null) return null;
+
+  // Teltonika / 3GPP CSQ 0..31 -> dBm
+  if (n >= 0 && n <= 31) {
+    return -113 + (2 * n);
+  }
+
+  // Si ya viniera normalizado en dBm, conservarlo.
+  return n;
+}
+
 function eventNameFromId(eventId) {
   if (Number(eventId) === 0) return 'Periodic / Sin evento';
   return null;
@@ -466,6 +473,8 @@ async function normalizeAvlRecord(imei, rec, rawPacketHex) {
   const heading = toNumber(rec?.angle ?? gps?.angle);
   const odometer = toNumber(getIo(io, 16));
   const mobileOperatorCode = getIo(io, 241);
+  const rawRssi = getIo(io, 21);
+  const rssi = normalizeRssiToDbm(rawRssi);
   const extVoltage = toVoltageVolts(getIo(io, 66));
   const batteryPercent = toBatteryPercentFromMv(getIo(io, 67));
   const tmp1Raw = getIo(io, 10800);
@@ -483,12 +492,7 @@ async function normalizeAvlRecord(imei, rec, rawPacketHex) {
   const event_name = eventNameFromId(event_id);
   const unified = unifiedEventFromId(event_id);
   const updateTime = rec?.timestamp ? new Date(rec.timestamp) : null;
-  const excludeOdometer = ODOMETER_EXCLUDED_EVENTS.has(Number(event_id));
-  const odometerForKms = excludeOdometer ? null : odometer;
-  const odometroReporte = await computeAndStoreOdometerDelta(imei, odometerForKms, updateTime, {
-    shouldComputeDelta: !excludeOdometer,
-    shouldUpdateCache: !excludeOdometer,
-  });
+  const odometroReporte = await computeAndStoreOdometerDelta(imei, odometer, updateTime);
 
   const device = await getDeviceFromImei(String(imei));
 
@@ -521,8 +525,8 @@ ${JSON.stringify(debugIoElements, null, 2)}`);
     heading,
     satelites: toNumber(rec?.satelites ?? rec?.satellites ?? gps?.satellites),
     operator: mobileOperatorCode ?? null,
-    rssi: -103,
-    odometer: odometerForKms,
+    rssi,
+    odometer,
     powerSupply: extVoltage,
     powerBat: batteryPercent,
     event_code: Number(event_id) || 0,
@@ -534,7 +538,7 @@ ${JSON.stringify(debugIoElements, null, 2)}`);
     unified_event_name: unified.unified_event_name,
     stoped: stoppedFromSpeed(speedNum),
     update_time: updateTime,
-    odometroTotal: odometerForKms,
+    odometroTotal: odometer,
     odometroReporte,
     distance_m_between_msgs: 0,
     tmp1: tmp1 === null ? null : (tmp1 / 100),
@@ -785,14 +789,6 @@ if (responseText) {
       }
 
       const doc = await normalizeAvlRecord(imei, rec, rawPacketHex);
-
-      if (ODOMETER_EXCLUDED_EVENTS.has(Number(doc?.event_id)) && !hasRelevantSensorValues(doc)) {
-        if (DEBUG_FILTERS) {
-          console.log('skip record', JSON.stringify({ imei, rawEventCode, reason: 'odometer_excluded_without_sensor_values' }));
-        }
-        discarded += 1;
-        continue;
-      }
 
       const enrichedDoc = await applyPersistentSensorState(doc);
       docsToInsert.push(enrichedDoc);
