@@ -556,6 +556,10 @@ ${JSON.stringify(debugIoElements, null, 2)}`);
     normalized.raw_packet_hex = rawPacketHex;
   }
 
+  if (Number(device?.device_id) === 4292) {
+    console.log(`🧪 device_id=4292 lat=${normalized.lat} lng=${normalized.lng} tmp1=${normalized.tmp1} tmp2=${normalized.tmp2}`);
+  }
+
   return normalized;
 }
 
