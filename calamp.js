@@ -234,6 +234,7 @@ function parseCalamp(hex) {
 async function normalizeCalampPacket(packet, rawPacketHex) {
   const device = await getDeviceFromImei(String(packet.imei));
   const odometroReporte = await computeAndStoreOdometerDelta(packet.imei, packet.odometroTotal, packet.update_time);
+console.log('xxx')
   const normalized = {
     imei: String(packet.imei),
     device_id: device?.device_id ?? null,
