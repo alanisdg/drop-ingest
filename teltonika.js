@@ -121,9 +121,7 @@ function maybeCommandWrite(socket, payload, label = "command.write") {
 // Nota: TCP mirroring / forwarding removido (ingestor mínimo)
 
 function maybeWrite(socket, payload, label = "socket.write") {
-  if (!ACK_ENABLED) {
-    return;
-  }
+  
   try {
     socket.write(payload);
     const bytesOut = Buffer.isBuffer(payload) ? payload.length : Buffer.byteLength(String(payload));
@@ -704,15 +702,15 @@ async function handleIncomingPacket(data, socket, state) {
       maybeWrite(socket, Buffer.from([0x01]), "IMEI ACK");
       return;
     }
-
+ const responseText = decodeTeltonikaResponse(data);
+            console.log('la respues es ');
+            console.log(responseText);
     const avl = parser.getAvl();
     if (String(imei) === String(DEBUG_IMEI)) {
       console.log(`🧪 Debug raw TCP hex | imei=${imei}\n${data.toString("hex")}`);
       console.log(`🧪 Debug parser AVL | imei=${imei}\n${JSON.stringify(avl ?? null, null, 2)}`);
     }
-            const responseText = decodeTeltonikaResponse(data);
-            console.log('la respues es ');
-            console.log(responseText);
+           
 if (responseText) {
   try {
     const session = imei ? getSessionByImei(String(imei)) : null;
