@@ -465,6 +465,7 @@ async function normalizeAvlRecord(imei, rec, rawPacketHex) {
   const odometer = toNumber(getIo(io, 16));
   const mobileOperatorCode = getIo(io, 241);
   const extVoltage = toVoltageVolts(getIo(io, 66));
+  const rssiRaw = toNumber(getIo(io, 21));
   const batteryPercent = toBatteryPercentFromMv(getIo(io, 67));
   const tmp1Raw = getIo(io, 10800);
   const tmp2Raw = getIo(io, 10801);
