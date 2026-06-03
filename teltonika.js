@@ -519,7 +519,7 @@ ${JSON.stringify(debugIoElements, null, 2)}`);
     heading,
     satelites: toNumber(rec?.satelites ?? rec?.satellites ?? gps?.satellites),
     operator: mobileOperatorCode ?? null,
-    rssi: -103,
+    rssi: rssiRaw,
     odometer: odometerForKms,
     powerSupply: extVoltage,
     powerBat: batteryPercent,
