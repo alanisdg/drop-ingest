@@ -508,7 +508,7 @@ ${JSON.stringify(rec, null, 2)}`);
 ${JSON.stringify(debugIoElements, null, 2)}`);
     }
   }
-
+console.log(rssiRaw)
   const normalized = {
     imei: String(imei),
     device_id: device?.device_id ?? null,
